@@ -1,0 +1,215 @@
+---
+title: "deseq2_rnaseq_analysis_pasilla"
+author: "Eduard Magerusan"
+format: html
+editor: visual
+---
+
+# 1. Introduction
+
+This report demonstrates how to perform a differential expression analysis using the DESeq2 R package.\
+We will use the **pasilla** dataset, which is based on an RNA-seq experiment in *Drosophila melanogaster* cell cultures.
+
+The experiment investigated the effect of RNA interference (RNAi) knock-down of the **splicing factor pasilla** (*Brooks et al., 2011*). The dataset was generated using a count matrix and is available through the **pasilla** Bioconductor package.
+
+We will identify genes that are significantly differentially expressed between two conditions:\
+cells treated with RNAi targeting pasilla, and untreated control cells.
+
+```{r}
+# Load libraries
+library("DESeq2")
+library("tidyverse")
+library("pasilla")
+```
+
+# 2. Loading and exploring the dataset
+
+```{r}
+# Load count data and sample metadata from the pasilla package
+pasCts <- system.file("extdata",
+                      "pasilla_gene_counts.tsv",
+                      package="pasilla", mustWork=TRUE)
+pasAnno <- system.file("extdata",
+                       "pasilla_sample_annotation.csv",
+                       package="pasilla", mustWork=TRUE)
+cts <- as.matrix(read.csv(pasCts,sep="\t",row.names="gene_id"))
+coldata <- read.csv(pasAnno, row.names=1)
+coldata <- coldata[,c("condition","type")]
+coldata$condition <- factor(coldata$condition, levels = c("untreated", "treated"))
+coldata$type <- factor(coldata$type)
+```
+
+```{r}
+# Ensure that sample names match between the count matrix and the metadata
+rownames(coldata) <- sub("fb", "", rownames(coldata))
+cts <- cts[, rownames(coldata)]
+all(rownames(coldata) == colnames(cts))
+```
+
+```{r}
+# Create a DESeq2 dataset object
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = coldata,
+                              design = ~ condition)
+```
+
+```{r}
+# Filter out genes with low counts
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+```
+
+# 3. Running the DESeq2 pipeline
+
+```{r}
+# Run the DESeq2 analysis and extract results
+dds <- DESeq(dds)
+res <- results(dds)
+res
+```
+
+```{r}
+# Extract results for the specific contrast
+res <- results(dds, name="condition_treated_vs_untreated")
+```
+
+```{r}
+# Apply shrinkage to log2 fold changes
+resLFC <- lfcShrink(dds, coef="condition_treated_vs_untreated", type="apeglm")
+```
+
+```{r}
+# Sort results by p-value to see the most significant genes at the top and summarize the  DESeq2 output
+resOrdered <- res[order(res$pvalue),]
+summary(res)
+```
+
+```{r}
+# summarize results using a stricter significance threshold (adjusted p-value < 0.05)
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+```
+
+# 4. MA-plot
+
+### MA-plot of shrunken log2 fold changes
+
+The MA-plot shows the log2 fold changes of gene expression between conditions, plotted against the mean of normalized counts. This version uses *shrunken* log2 fold changes, which help to reduce noise in low-count genes.
+
+```{r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+Significantly differentially expressed genes (adjusted p-value \< 0.1) are shown in blue, while non-significant genes are shown in grey.
+
+# 5. Exporting results
+
+To focus on the most relevant genes, we filtered the results to include only those with an adjusted p-value (padj) below 0.1, indicating statistically significant differential expression between treated and untreated conditions. These filtered results were then exported as a CSV file. This file can be used for further downstream analysis or visualization.
+
+```{r}
+resSig <- subset(resOrdered, padj < 0.1)
+resSig
+```
+
+```{r}
+write.csv(as.data.frame(resSig), file = "results/significant_genes.csv")
+```
+
+# 6. Exploring significant genes
+
+To better understand the biological meaning of our results, we now explore the most significantly differentially expressed genes. These genes show both a strong fold change and a low adjusted p-value.
+
+We display the top 10 genes with the strongest changes in expression (absolute log2 fold change). These genes are good candidates for further biological interpretation or validation.
+
+```{r}
+library(org.Dm.eg.db)
+library(AnnotationDbi)
+
+fbgn_ids <- rownames(resSig)
+gene_names <- mapIds(org.Dm.eg.db,
+                     keys = fbgn_ids,
+                     column = "SYMBOL",
+                     keytype = "FLYBASE",
+                     multiVals = "first")
+
+resSig$gene <- gene_names
+```
+
+```{r}
+head(resSig[order(abs(resSig$log2FoldChange), decreasing = TRUE), ], 10)
+```
+
+We use a volcano plot and a heatmap to visualize the results of our differential expression analysis. These visualizations help identify genes with strong changes and show expression patterns across all samples.
+
+```{r}
+library(ggplot2)
+
+fbgn_ids <- rownames(resOrdered)
+
+gene_names <- mapIds(org.Dm.eg.db,
+                     keys = fbgn_ids,
+                     column = "SYMBOL",
+                     keytype = "FLYBASE",
+                     multiVals = "first")
+
+resOrdered$gene <- gene_names
+
+resOrdered$gene <- ifelse(is.na(resOrdered$gene), rownames(resOrdered), resOrdered$gene)
+```
+
+## 6.1 Volcano Plot
+
+The volcano plot displays the results of the differential expression analysis. Each point represents a gene, plotted by its log2 fold change (x-axis) and statistical significance (–log10 adjusted p-value, y-axis). Genes with an adjusted p-value \< 0.1 are shown in red and considered significantly differentially expressed.
+
+```{r}
+library(ggrepel)
+
+topGenes <- rownames(resOrdered)[order(resOrdered$padj)][1:10]
+
+ggplot(resOrdered, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = padj < 0.1), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_text_repel(
+    data = subset(resOrdered, rownames(resOrdered) %in% topGenes),
+    aes(label = gene),
+    size = 3,
+    box.padding = 0.4,
+    max.overlaps = 10
+  ) +
+  labs(title = "Volcano plot",
+       x = "Log2 Fold Change", y = "-log10 adjusted p-value") +
+  theme_minimal()
+
+```
+
+## 6.2 Heatmap of top differentially expressed genes
+
+The heatmap shows the expression of the top 20 most significantly differentially expressed genes across all samples. Rows represent genes and columns represent samples. The color scale indicates the relative expression level of each gene. Sample annotations for condition (treated vs untreated) and sequencing type are displayed at the top. Genes with similar expression patterns and samples with similar profiles are grouped together.
+
+```{r}
+library(DESeq2)
+library(pheatmap)
+
+topgenes <- rownames(resSig[order(resSig$padj), ])[1:20]
+
+vsd <- vst(dds, blind = FALSE)  
+mat <- assay(vsd)[topgenes, ] 
+
+gene_names <- mapIds(org.Dm.eg.db,
+                     keys = rownames(mat),
+                     column = "SYMBOL",
+                     keytype = "FLYBASE",
+                     multiVals = "first")
+
+rownames(mat) <- gene_names
+
+pheatmap(mat, scale = "row", annotation_col = coldata)
+
+```
+
+# References
+
+Brooks AN, et al. (2011). Conservation of an RNA regulatory map between Drosophila and mammals. *Genome Research*.
+
+Zhu, A., Ibrahim, J.G., Love, M.I. (2018) Heavy-tailed prior distributions for sequence count data: removing the noise and preserving large differences. Bioinformatics. <https://doi.org/10.1093/bioinformatics/bty895>

@@ -1,0 +1,16 @@
+Version: 1.0
+ProjectId: bf041564-79e8-44c6-9923-5433baf7694f
+
+RestoreWorkspace: Default
+SaveWorkspace: Default
+AlwaysSaveHistory: Default
+
+EnableCodeIndexing: Yes
+UseSpacesForTab: Yes
+NumSpacesForTab: 2
+Encoding: UTF-8
+
+RnwWeave: Sweave
+LaTeX: pdfLaTeX
+
+ProjectName: deseq2_rnaseq_analysis_pasilla
